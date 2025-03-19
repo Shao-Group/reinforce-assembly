@@ -1,6 +1,7 @@
 from typing import List, Dict, Tuple, Optional, Union, Any
 import random
 from torch_geometric.data import Data
+import torch
 import Levenshtein
 
 
@@ -10,6 +11,8 @@ class SpliceGraphEnv:
         self.ground_truths = data_sample['ground_truths']
         self.sources = data_sample['sources']
         self.sinks = data_sample['sinks']
+        self.node_id_map = data_sample['node_id_map']
+        self.reverse_node_id_map = data_sample['reverse_node_id_map']
         self.graph_id = data_sample['graph_id']
 
         # TODO: Reward part is to be modified later:
