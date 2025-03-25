@@ -23,3 +23,14 @@ dataset = SpliceGraphDataset(processor)
 print(f"Dataset size: {len(dataset)}")
 # %%
 env = SpliceGraphEnv(dataset[0])
+# %%
+initial_state = env.reset()
+# %%
+print(env.get_valid_actions())
+# %%
+new_graph, total_reward, done, info = env.step(9)
+# %%
+new_graph.x[env.current_node, -2]
+# %%
+print(env.current_node)
+# %%

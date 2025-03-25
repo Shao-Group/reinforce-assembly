@@ -3,51 +3,21 @@ import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.data import Data, Dataset
-from sklearn.preprocessing import StandardScaler
 
 
 class SpliceGraphDataProcessor:
-    def __init__(self, input_dir, prefix, samples=None, num_ground_truths=5, normalize_features=True):
-        
-        self.input_dir = input_dir
-        self.prefix = prefix
+    def __init__(self, node_file_path, edge_file_path, ground_truth_file_path, phasing_file_path, samples=None, simplify=True):
+        self.node_file_path = node_file_path
+        self.edge_file_path = edge_file_path
+        self.ground_truth_file_path = ground_truth_file_path
+        self.phasing_file_path = phasing_file_path
         self.samples = samples
-        self.num_ground_truths = num_ground_truths
-        self.normalize_features = normalize_features
-        
-        # Feature columns for nodes and edges
-        # self.node_feature_cols = [
-        #     'weight', 'length', 'maxcov', 'stddev', 'indel_sum_cov', 
-        #     'indel_ratio', 'left_indel', 'right_indel'
-        # ]
+        self.simplify = simplify
+        self.graph_ids = None
 
-        self.node_feature_cols = [
-            'weight', 'length', 'maxcov', 'stddev'
-        ]
-
-        self.edge_feature_cols = ['weight', 'length']
-        
-        # Load data frames
-        self.node_df, self.edge_df, self.path_df, self.phasing_df = self._load_data()
-        
-        # Initialize and fit scalers if needed
-        if normalize_features:
-            self.node_scaler = StandardScaler()
-            self.edge_scaler = StandardScaler()
-            self._fit_scalers()
-        
-        # Filter valid graph IDs
-        self.valid_graph_ids = self._filter_valid_graphs()
+        self.node_df, self.edge_df, self.ground_truth_df, self.phasing_df = self._load_data()
     
     def _load_data(self):
-        """Load data files and apply sample filtering if needed."""
-        # File paths
-        node_file = os.path.join(self.input_dir, f'{self.prefix}.node.csv')
-        edge_file = os.path.join(self.input_dir, f'{self.prefix}.edge.csv')
-        path_file = os.path.join(self.input_dir, f'{self.prefix}.path.label.csv')
-        phasing_file = os.path.join(self.input_dir, f'{self.prefix}.phasing.csv')
-        
-        # Define dtypes for efficiency
         node_dtypes = {
             "chr": str, "graph_id": str, "node_id": int, 
             "start_pos": np.uint64, "end_pos": np.uint64, 
@@ -73,60 +43,47 @@ class SpliceGraphDataProcessor:
         }
         
         # Load CSVs
-        node_df = pd.read_csv(node_file, dtype=node_dtypes)
-        edge_df = pd.read_csv(edge_file, dtype=edge_dtypes)
-        path_df = pd.read_csv(path_file, dtype=path_dtypes)
-        phasing_df = pd.read_csv(phasing_file, dtype=phasing_dtypes)
+        node_df = pd.read_csv(self.node_file_path, dtype=node_dtypes)
+        edge_df = pd.read_csv(self.edge_file_path, dtype=edge_dtypes)
+        ground_truth_df = pd.read_csv(self.ground_truth_file_path, dtype=path_dtypes)
+        phasing_df = pd.read_csv(self.phasing_file_path, dtype=phasing_dtypes)
         
         # Apply sample filtering if specified
         if self.samples:
             node_df = node_df[node_df['sample'].isin(self.samples)]
             edge_df = edge_df[edge_df['sample'].isin(self.samples)]
-            path_df = path_df[path_df['sample'].isin(self.samples)]
+            ground_truth_df = ground_truth_df[ground_truth_df['sample'].isin(self.samples)]
             phasing_df = phasing_df[phasing_df['sample'].isin(self.samples)]
         
-        return node_df, edge_df, path_df, phasing_df
-    
-    def _fit_scalers(self):
-        """Fit scalers to the node and edge features."""
-        self.node_scaler.fit(self.node_df[self.node_feature_cols].values)
-        self.edge_scaler.fit(self.edge_df[self.edge_feature_cols].values)
-    
-    def _filter_valid_graphs(self):
-        """Filter graphs that have sufficient nodes, edges, and ground truth paths."""
-        valid_ids = []
-        all_graph_ids = self.node_df['graph_id'].unique()
+        if self.simplify:
+            node_df = node_df.drop(['chr', 'start_pos', 'end_pos', 'extPathSupport', 'maxcov', 
+                'stddev', 'indel_sum_cov', 'indel_ratio', 'left_indel', 'right_indel'], axis=1)
+            edge_df = edge_df.drop(['chr', 'start_pos', 'end_pos',
+                'extPathSupport'], axis=1)
+            ground_truth_df = ground_truth_df.drop(['chr', 'path_id', 'splice_source',
+                'splice_target', 'abundance', 'GroundTruthID'], axis=1)
+            phasing_df = phasing_df.drop(['chr', 'path_id'], axis=1)
+
+            counts = ground_truth_df['graph_id'].value_counts()
+            graph_ids_numgt_ge_4 = set(counts[counts >= 4].index.tolist())
+
+            phasing_columns_set = set(phasing_df['graph_id'])
+            node_df = node_df[node_df['graph_id'].isin(graph_ids_numgt_ge_4 & phasing_columns_set)]
+            edge_df = edge_df[edge_df['graph_id'].isin(graph_ids_numgt_ge_4 & phasing_columns_set)]
+            ground_truth_df = ground_truth_df[ground_truth_df['graph_id'].isin(graph_ids_numgt_ge_4 & phasing_columns_set)]
+            phasing_df = phasing_df[phasing_df['graph_id'].isin(graph_ids_numgt_ge_4)]
+
+            self.graph_ids = node_df['graph_id'].unique()
         
-        for graph_id in all_graph_ids:
-            nodes = self.node_df[self.node_df['graph_id'] == graph_id]
-            edges = self.edge_df[self.edge_df['graph_id'] == graph_id]
-            paths = self.path_df[(self.path_df['graph_id'] == graph_id) & 
-                                (self.path_df['label'] == 1)]
-            
-            # Valid if has sufficient nodes, edges, and at least one ground truth
-            if len(nodes) >= 5 and len(edges) > 4 and len(paths) > 0:
-                valid_ids.append(graph_id)
-        
-        return valid_ids
+        return node_df, edge_df, ground_truth_df, phasing_df
+    
+    def _get_dfs(self):
+        return self.node_df, self.edge_df, self.ground_truth_df, self.phasing_df
     
     def process_graph(self, graph_id):
-        """
-        Process a single graph into format required for reinforcement learning.
-        
-        Args:
-            graph_id (str): ID of the graph to process
-            
-        Returns:
-            data (Data): PyTorch Geometric Data object
-            ground_truths (list): List of ground truth transcript paths
-            sources (list): List of source node IDs
-            sinks (list): List of sink node IDs
-            node_id_map (dict): Mapping from original to contiguous node IDs
-            reverse_node_id_map (dict): Mapping from contiguous to original node IDs
-        """
-        # Filter data for this graph
         nodes = self.node_df[self.node_df['graph_id'] == graph_id]
         edges = self.edge_df[self.edge_df['graph_id'] == graph_id]
+        ground_truths = self.ground_truth_df[self.ground_truth_df['graph_id'] == graph_id]
         phasing = self.phasing_df[self.phasing_df['graph_id'] == graph_id]
         
         # Create node ID mapping (original ID → contiguous index)
@@ -138,13 +95,8 @@ class SpliceGraphDataProcessor:
         node_features = []
         for nid in original_node_ids:
             node_row = nodes[nodes['node_id'] == nid].iloc[0]
-            node_features.append([node_row[col] for col in self.node_feature_cols])
-        
-        # Normalize node features if requested
-        node_features = np.array(node_features)
-        if self.normalize_features:
-            node_features = self.node_scaler.transform(node_features)
-        
+            node_features.append([node_row[col] for col in ['weight', 'length']])
+    
         # Convert edge source/target to use contiguous IDs
         edge_source = [node_id_map[s] for s in edges['source']]
         edge_target = [node_id_map[t] for t in edges['target']]
@@ -152,22 +104,17 @@ class SpliceGraphDataProcessor:
         # Create edge_index tensor [2, num_edges]
         edge_index = torch.tensor([edge_source, edge_target], dtype=torch.long)
         
-        # Extract and normalize edge features
-        edge_features = edges[self.edge_feature_cols].values
-        if self.normalize_features:
-            edge_features = self.edge_scaler.transform(edge_features)
+        edge_features = edges[['weight', 'length']].values
         
         # Calculate phasing path coverage
         num_nodes = len(node_id_map)
         node_phasing_coverage = torch.zeros(num_nodes, 1, dtype=torch.float)
         edge_phasing_coverage = torch.zeros(len(edge_source), 1, dtype=torch.float)
         
-        # Create edge lookup for efficient updates
         edge_lookup = {}
         for i, (s, t) in enumerate(zip(edge_source, edge_target)):
             edge_lookup[(s, t)] = i
         
-        # Process phasing paths
         for _, row in phasing.iterrows():
             try:
                 node_seq_str = row['node_sequence']
@@ -212,58 +159,30 @@ class SpliceGraphDataProcessor:
             edge_attr=edge_features
         )
         
-        # Process ground truth paths
-        ground_truths, sources, sinks = self._process_ground_truths(graph_id, node_id_map)
-        
-        return data, ground_truths, sources, sinks, node_id_map, reverse_node_id_map
-    
-    def _process_ground_truths(self, graph_id, node_id_map):
-        """
-        Extract ground truth transcript paths for the given graph.
-        
-        Args:
-            graph_id (str): Graph ID
-            node_id_map (dict): Mapping from original node IDs to contiguous IDs
-            
-        Returns:
-            ground_truth_paths (list): List of ground truth paths as node sequences
-            sources (list): Source node IDs (start of transcripts)
-            sinks (list): Sink node IDs (end of transcripts) 
-        """
-        # Filter to labeled paths (ground truths)
-        filtered_df = self.path_df[(self.path_df['graph_id'] == graph_id) & 
-                                   (self.path_df['label'] == 1)]
-        
-        # Sort by abundance and keep top paths
-        top_paths = filtered_df.sort_values(by='abundance', ascending=False
-                                           ).head(self.num_ground_truths)
-        
         ground_truth_paths = []
         sources = set()
         sinks = set()
-        
-        for _, row in top_paths.iterrows():
+
+        for _, row in ground_truths.iterrows():
             try:
-                # Parse node sequence and map to new IDs
-                seq_str = row['node_sequence']
-                original_nodes = [int(node) for node in seq_str.split(',')]
-                node_list = [node_id_map.get(node, -1) for node in original_nodes]
+                node_seq_str = row['node_sequence']
+                
+                # Map original node IDs to contiguous indices
+                original_nodes = [int(n) for n in node_seq_str.split(',')]
+                node_list = [node_id_map.get(n, -1) for n in original_nodes]
                 
                 # Skip invalid paths
                 if -1 in node_list:
                     continue
-                
+
                 ground_truth_paths.append(node_list)
-                sources.add(node_list[0])     # First node is a source
-                sinks.add(node_list[-1])      # Last node is a sink
+                sources.add(node_list[0])
+                sinks.add(node_list[-1])
+        
             except:
                 continue
         
-        return ground_truth_paths, list(sources), list(sinks)
-    
-    def get_all_graph_ids(self):
-        """Return list of all valid graph IDs."""
-        return self.valid_graph_ids
+        return data, ground_truth_paths, sources, sinks, node_id_map, reverse_node_id_map
 
 
 class SpliceGraphDataset(Dataset):
@@ -276,28 +195,13 @@ class SpliceGraphDataset(Dataset):
         """
         super().__init__()
         self.data_processor = data_processor
-        self.graph_ids = data_processor.get_all_graph_ids()
+        self.graph_ids = data_processor.graph_ids
     
     def len(self):
         """Return number of graphs in the dataset."""
         return len(self.graph_ids)
     
     def get(self, idx):
-        """
-        Get a graph by index, with all information needed for RL environment.
-        
-        Args:
-            idx (int): Index in the dataset
-            
-        Returns:
-            data_dict (dict): Dictionary containing:
-                - data: PyG Data object with node/edge features
-                - ground_truths: List of ground truth paths
-                - sources: List of source node IDs
-                - sinks: List of sink node IDs
-                - node_id_map: Original to contiguous ID mapping
-                - reverse_node_id_map: Contiguous to original ID mapping
-        """
         if idx >= len(self.graph_ids):
             raise IndexError(f"Index {idx} out of range for dataset with {len(self.graph_ids)} graphs")
         
